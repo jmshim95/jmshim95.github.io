@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Baby Cam 수신</title>
+    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+    <style>
+      body {
+        font: 15px system-ui;
+        margin: 0;
+        padding: 12px;
+        background: #111;
+        color: #eee;
+      }
+      video {
+        width: 100%;
+        background: #000;
+        border-radius: 8px;
+      }
+      button {
+        font: inherit;
+        padding: 12px;
+        margin: 4px 0;
+        border-radius: 10px;
+        border: 0;
+        background: #3b82f6;
+        color: #fff;
+        width: 100%;
+      }
+      #al {
+        display: none;
+        background: #dc2626;
+        padding: 10px;
+        border-radius: 8px;
+        margin: 6px 0;
+        font-weight: 700;
+      }
+      label {
+        display: block;
+        margin-top: 6px;
+      }
+      input[type="range"] {
+        width: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="al">🔔 울음/큰 소리 감지!</div>
+    <video id="v" autoplay playsinline></video>
+    <div id="st">대기</div>
+    <button id="go">▶ 연결 / 소리 켜기</button>
+    <button id="talk">🎤 누르고 있는 동안 아기에게 말하기</button>
+    <button id="nm">🌙 야간 보정 토글</button>
+    <label
+      >밝기 <input id="br" type="range" min="0.5" max="3" step="0.1" value="1"
+    /></label>
+    <label
+      >대비
+      <input id="ct" type="range" min="0.5" max="2.5" step="0.1" value="1"
+    /></label>
+    <label
+      >소리 임계값 <span id="tv">-35</span> dB
+      <input id="th" type="range" min="-60" max="-10" value="-35"
+    /></label>
+    <script>
+      const $ = (id) => document.getElementById(id);
+      const b64u = (a) =>
+        btoa(String.fromCharCode(...a))
+          .replace(/\+/g, "-")
+          .replace(/\//g, "_")
+          .replace(/=/g, "");
+      const unb = (s) =>
+        Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/")), (c) =>
+          c.charCodeAt(0),
+        );
+      async function keys(raw) {
+        const h = (s) =>
+          crypto.subtle.digest(
+            "SHA-256",
+            new Uint8Array([...raw, ...new TextEncoder().encode(s)]),
+          );
+        return {
+          aes: await crypto.subtle.importKey(
+            "raw",
+            await h("e2ee"),
+            "AES-GCM",
+            false,
+            ["encrypt", "decrypt"],
+          ),
+          mac: await crypto.subtle.importKey(
+            "raw",
+            await h("auth"),
+            { name: "HMAC", hash: "SHA-256" },
+            false,
+            ["sign", "verify"],
+          ),
+        };
+      }
+      const W = `onrtctransform=e=>{const{readable,writable,options:o}=e.transformer;const enc=o.op=='enc',s=o.kind=='video'?10:1;
+readable.pipeThrough(new TransformStream({async transform(f,c){try{const d=new Uint8Array(f.data);let out;
+if(enc){const iv=crypto.getRandomValues(new Uint8Array(12));const ct=new Uint8Array(await crypto.subtle.encrypt({name:'AES-GCM',iv},o.key,d.subarray(s)));
+out=new Uint8Array(s+ct.length+12);out.set(d.subarray(0,s));out.set(ct,s);out.set(iv,s+ct.length);}
+else{const iv=d.subarray(d.length-12);const pt=new Uint8Array(await crypto.subtle.decrypt({name:'AES-GCM',iv},o.key,d.subarray(s,d.length-12)));
+out=new Uint8Array(s+pt.length);out.set(d.subarray(0,s));out.set(pt,s);}
+f.data=out.buffer;c.enqueue(f)}catch(_){}}})).pipeTo(writable)}`;
+      const worker = new Worker(URL.createObjectURL(new Blob([W])));
+      function e2ee(pc) {
+        if (!window.RTCRtpScriptTransform) return false;
+        pc.getSenders().forEach(
+          (s) =>
+            s.track &&
+            (s.transform = new RTCRtpScriptTransform(worker, {
+              op: "enc",
+              kind: s.track.kind,
+              key: aes,
+            })),
+        );
+        pc.addEventListener(
+          "track",
+          (e) =>
+            (e.receiver.transform = new RTCRtpScriptTransform(worker, {
+              op: "dec",
+              kind: e.track.kind,
+              key: aes,
+            })),
+        );
+        return true;
+      }
+
+      const ICE = [
+        { urls: "stun:stun.l.google.com:19302" },
+        /*,{urls:'turn:YOUR_HOST:443?transport=tcp',username:'USER',credential:'PASS'}*/
+      ];
+      const [SID, KEY] = location.hash.slice(1).split(".");
+      let peer,
+        conn,
+        call,
+        mic,
+        aes,
+        mac,
+        ac,
+        n = 0,
+        rt = null,
+        okT = null,
+        lastFrames = -1,
+        th = -35;
+
+      $("go").onclick = async () => {
+        if (!SID || !KEY)
+          return ($("st").textContent = "링크가 올바르지 않습니다");
+        ({ aes, mac } = await keys(unb(KEY)));
+        ac = new AudioContext();
+        ac.resume();
+        mic = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true },
+        });
+        mic.getAudioTracks()[0].enabled = false; // 말하기 버튼 누를 때만 송출
+        $("v").muted = false;
+        peer = new Peer({ config: { iceServers: ICE } });
+        peer.on("open", dial);
+        peer.on("disconnected", () => peer.reconnect());
+        peer.on("error", () => retry());
+        peer.on("call", (c) => {
+          call?.close();
+          call = c;
+          c.answer(mic);
+          const pc = c.peerConnection;
+          e2ee(pc);
+          pc.oniceconnectionstatechange = () => {
+            const s = pc.iceConnectionState;
+            if (s == "connected" || s == "completed") {
+              n = 0;
+              clearTimeout(okT);
+              rt = null;
+              $("st").textContent = "🟢 연결됨";
+            } else if (s == "disconnected")
+              setTimeout(
+                () => pc.iceConnectionState == "disconnected" && retry(),
+                4000,
+              );
+            else if (s == "failed") retry();
+          };
+          c.on("stream", (s) => {
+            $("v").srcObject = s;
+            $("v")
+              .play()
+              .catch(() => {
+                $("v").muted = true;
+                $("v").play();
+              });
+          });
+          c.on("close", () => retry());
+        });
+        setInterval(watchdog, 5000);
+      };
+      function dial() {
+        clearTimeout(okT);
+        conn?.close();
+        conn = peer.connect(SID, { reliable: true });
+        $("st").textContent = "🟡 연결 시도 " + (n + 1);
+        conn.on("data", async (m) => {
+          if (m.t == "ch") {
+            const s = await crypto.subtle.sign("HMAC", mac, unb(m.n));
+            conn.send({ t: "au", s: b64u(new Uint8Array(s)) });
+            conn.send({ t: "cfg", th });
+          } else if (m.t == "cry") alarm(m.db);
+        });
+        conn.on("close", () => retry());
+        okT = setTimeout(() => retry(), 15000); // 15초 내 영상 없으면 재시도
+      }
+      function retry(now) {
+        // exponential backoff: 1,2,4,8,16,30초 + jitter
+        if (rt && !now) return;
+        clearTimeout(rt);
+        const d = now
+          ? 0
+          : Math.min(30000, 1000 * 2 ** n) + Math.random() * 500;
+        n++;
+        $("st").textContent = "🔴 " + Math.round(d / 1000) + "초 후 재연결";
+        rt = setTimeout(() => {
+          rt = null;
+          call?.close();
+          if (peer?.disconnected) peer.reconnect();
+          dial();
+        }, d);
+      }
+      async function watchdog() {
+        // 프레임 정지 감지
+        const pc = call?.peerConnection;
+        if (!pc) return;
+        for (const r of (await pc.getStats()).values())
+          if (r.type == "inbound-rtp" && r.kind == "video") {
+            if (r.framesDecoded === lastFrames) retry(true);
+            lastFrames = r.framesDecoded;
+          }
+      }
+      addEventListener("online", () => retry(true));
+      document.addEventListener(
+        "visibilitychange",
+        () => document.visibilityState == "visible" && peer && retry(true),
+      );
+      function alarm(db) {
+        $("al").style.display = "block";
+        $("al").textContent = "🔔 소리 감지 (" + db + " dB)";
+        navigator.vibrate?.([300, 150, 300]);
+        const o = ac.createOscillator();
+        o.frequency.value = 880;
+        o.connect(ac.destination);
+        o.start();
+        o.stop(ac.currentTime + 0.4);
+        setTimeout(() => ($("al").style.display = "none"), 8000);
+      }
+      // 양방향 오디오 (push-to-talk)
+      const tk = $("talk"),
+        setTalk = (on) => {
+          if (mic) mic.getAudioTracks()[0].enabled = on;
+          tk.style.background = on ? "#dc2626" : "#3b82f6";
+        };
+      tk.onpointerdown = () => setTalk(true);
+      tk.onpointerup =
+        tk.onpointerleave =
+        tk.onpointercancel =
+          () => setTalk(false);
+      // 야간 보정 (CSS filter)
+      const filt = () =>
+        ($("v").style.filter =
+          `brightness(${$("br").value}) contrast(${$("ct").value})`);
+      $("br").oninput = $("ct").oninput = filt;
+      $("nm").onclick = () => {
+        $("br").value = 2.2;
+        $("ct").value = 1.5;
+        filt();
+        $("v").style.filter += " grayscale(1)";
+      };
+      $("th").oninput = (e) => {
+        th = +e.target.value;
+        $("tv").textContent = th;
+        conn?.open && conn.send({ t: "cfg", th });
+      };
+    </script>
+  </body>
+</html>
