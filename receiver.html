@@ -185,6 +185,7 @@ async function keys(raw){
   };
 }
 
+const USE_E2EE=true; // 문제 분리용: false면 E2EE 끔 (송신/수신 둘 다 동일하게)
 const W=`onrtctransform=e=>{const{readable,writable,options:o}=e.transformer;const enc=o.op=='enc',s=o.kind=='video'?10:1;
 readable.pipeThrough(new TransformStream({async transform(f,c){try{const d=new Uint8Array(f.data);let out;
 if(enc){const iv=crypto.getRandomValues(new Uint8Array(12));const ct=new Uint8Array(await crypto.subtle.encrypt({name:'AES-GCM',iv},o.key,d.subarray(s)));
@@ -194,7 +195,7 @@ out=new Uint8Array(s+pt.length);out.set(d.subarray(0,s));out.set(pt,s);}
 f.data=out.buffer;c.enqueue(f)}catch(_){}}})).pipeTo(writable)}`;
 const worker=new Worker(URL.createObjectURL(new Blob([W])));
 function e2ee(pc){
-  if(!window.RTCRtpScriptTransform)return false;
+  if(!USE_E2EE||!window.RTCRtpScriptTransform)return false;
   pc.getSenders().forEach(s=>s.track&&(s.transform=new RTCRtpScriptTransform(worker,{op:"enc",kind:s.track.kind,key:aes})));
   pc.addEventListener("track",e=>e.receiver.transform=new RTCRtpScriptTransform(worker,{op:"dec",kind:e.track.kind,key:aes}));
   return true;
@@ -223,15 +224,17 @@ if(!SID||!KEY){
       $("go").innerHTML='<span class="spinner-border spinner-border-sm"></span>';
       ({aes,mac}=await keys(unb(KEY)));
       ac=new AudioContext();await ac.resume();
-      mic=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true}});
-      mic.getAudioTracks()[0].enabled=false;
+      try{ // 마이크는 선택 사항: 없어도 시청 가능
+        mic=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true}});
+        mic.getAudioTracks()[0].enabled=false;
+      }catch(_){mic=null;$("talk").disabled=true;$("talkState").textContent="마이크 없음 (시청 전용)";}
       $("v").muted=false;
       peer=new Peer({config:{iceServers:ICE}});
       peer.on("open",dial);
       peer.on("disconnected",()=>peer.reconnect());
       peer.on("error",()=>retry());
       peer.on("call",c=>{
-        call?.close();call=c;c.answer(mic);
+        const oc=call;call=c;oc?.close();mic?c.answer(mic):c.answer();
         const pc=c.peerConnection;e2ee(pc);
         pc.oniceconnectionstatechange=()=>{
           const s=pc.iceConnectionState;
@@ -251,7 +254,7 @@ if(!SID||!KEY){
             $("mute").innerHTML='<i class="bi bi-volume-mute-fill fs-5"></i>';
           });
         });
-        c.on("close",()=>retry());
+        c.on("close",()=>{if(call===c)retry();});
       });
     }catch(e){
       $("go").disabled=false;
@@ -263,17 +266,18 @@ if(!SID||!KEY){
 }
 
 function dial(){
-  clearTimeout(okT);conn?.close();
-  conn=peer.connect(SID,{reliable:true});
+  clearTimeout(okT);
+  const old=conn;conn=null;old?.close();
+  const c=peer.connect(SID,{reliable:true});conn=c;
   setStatus("연결 중");message("카메라에 연결하고 있습니다…");
-  conn.on("data",async m=>{
+  c.on("data",async m=>{
     if(m.t==="ch"){
       const s=await crypto.subtle.sign("HMAC",mac,unb(m.n));
-      conn.send({t:"au",s:b64u(new Uint8Array(s))});
-      conn.send({t:"cfg",th});
+      c.send({t:"au",s:b64u(new Uint8Array(s))});
+      c.send({t:"cfg",th});
     }else if(m.t==="cry")alarm(m.db);
   });
-  conn.on("close",()=>retry());
+  c.on("close",()=>{if(conn===c)retry();});
   okT=setTimeout(()=>retry(),15000);
 }
 function retry(now){
@@ -283,21 +287,25 @@ function retry(now){
   n++;setStatus("재연결 중");
   message(d?"연결이 끊어졌습니다. 다시 연결합니다…":"다시 연결하는 중…");
   rt=setTimeout(()=>{
-    rt=null;call?.close();
+    rt=null;const oc=call;call=null;oc?.close();
     if(peer?.disconnected)peer.reconnect();
     dial();
   },d);
 }
+const alive=()=>["connected","completed"].includes(call?.peerConnection?.iceConnectionState);
+let stall=0;
 async function watchdog(){
-  const pc=call?.peerConnection;if(!pc)return;
+  const pc=call?.peerConnection;
+  if(!pc||document.hidden||rt)return;
   for(const r of (await pc.getStats()).values())
     if(r.type==="inbound-rtp"&&r.kind==="video"){
-      if(r.framesDecoded===lastFrames)retry(true);
+      stall=(r.framesDecoded===lastFrames)?stall+1:0;
       lastFrames=r.framesDecoded;
+      if(stall>=3){stall=0;retry(true);}
     }
 }
-addEventListener("online",()=>retry(true));
-document.addEventListener("visibilitychange",()=>document.visibilityState==="visible"&&peer&&retry(true));
+addEventListener("online",()=>!alive()&&retry(true));
+document.addEventListener("visibilitychange",()=>document.visibilityState==="visible"&&peer&&!alive()&&retry(true));
 function alarm(db){
   $("al").style.display="block";
   $("al").innerHTML='<i class="bi bi-bell-fill me-2"></i>큰 소리 감지 · '+db+" dB";
