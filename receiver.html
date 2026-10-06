@@ -190,7 +190,7 @@ async function keys(raw){
   };
 }
 
-const USE_E2EE=true; // 문제 분리용: false면 E2EE 끔 (송신/수신 둘 다 동일하게)
+let USE_E2EE=false; // 링크의 세 번째 값(1=사용)을 따름
 const W=`onrtctransform=e=>{const{readable,writable,options:o}=e.transformer;const enc=o.op=='enc';
 readable.pipeThrough(new TransformStream({async transform(f,c){try{const d=new Uint8Array(f.data);let out;const s=o.kind=='video'?(f.type=='key'?10:3):1;
 if(enc){const iv=crypto.getRandomValues(new Uint8Array(12));const ct=new Uint8Array(await crypto.subtle.encrypt({name:'AES-GCM',iv},o.key,d.subarray(s)));
@@ -207,7 +207,8 @@ function e2ee(pc){
 }
 
 const ICE=[{urls:"stun:stun.l.google.com:19302"}];
-const [SID,KEY]=location.hash.slice(1).split(".");
+const [SID,KEY,E2]=location.hash.slice(1).split(".");
+USE_E2EE=E2==="1";
 let peer,conn,call,mic,aes,mac,ac,n=0,rt=null,okT=null,lastFrames=-1,th=-35;
 
 function setStatus(text,type="wait"){
@@ -363,6 +364,7 @@ $("th").oninput=e=>{
   th=+e.target.value;$("tv").textContent=th+" dB";
   conn?.open&&conn.send({t:"cfg",th});
 };
+$("v").onclick=()=>$("v").play().catch(()=>{});
 setInterval(watchdog,5000);
 </script>
 </body>
