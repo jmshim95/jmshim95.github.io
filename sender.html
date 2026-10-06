@@ -91,6 +91,31 @@
       </div>
     </section>
 
+    <section id="pvCard" class="card action-card shadow-sm mb-3 d-none">
+      <div class="card-body p-3">
+        <div class="d-flex align-items-center mb-2">
+          <div class="flex-grow-1 fw-bold">내 카메라 미리보기</div>
+          <button id="pvTg" class="btn btn-sm btn-outline-secondary rounded-pill">숨기기</button>
+        </div>
+        <video id="pv" class="w-100 rounded-3 bg-black d-block mx-auto" style="max-width:360px;aspect-ratio:16/9;object-fit:contain" autoplay muted playsinline></video>
+        <div class="small text-secondary text-center mt-2">수신기로 송출 중인 화면입니다. (소리는 재생되지 않습니다)</div>
+      </div>
+    </section>
+
+    <section id="ctrlCard" class="card action-card shadow-sm mb-3 d-none">
+      <div class="card-body p-4">
+        <div class="d-flex align-items-center mb-3">
+          <div class="flex-grow-1">
+            <div class="fw-bold">송출 상태</div>
+            <div class="small text-secondary">연결된 수신기 수와 송출 제어</div>
+          </div>
+          <span id="vbadge" class="badge rounded-pill fs-6 text-bg-secondary"><i class="bi bi-people-fill me-1"></i>수신기 <span id="vcount">0</span>대 연결됨</span>
+        </div>
+        <button id="pauseBtn" class="btn btn-outline-danger w-100 feature-btn"><i class="bi bi-pause-fill me-2"></i>송출 중단</button>
+        <div id="pvPaused" class="alert alert-warning py-2 mt-3 mb-0 text-center d-none">⏸ 송출 중단 중 · 영상/소리가 전달되지 않고 소리 감지도 멈춥니다.</div>
+      </div>
+    </section>
+
     <section class="card action-card shadow-sm mb-3">
       <div class="card-body p-4">
         <div class="d-flex align-items-center mb-3">
@@ -198,7 +223,23 @@ function e2ee(pc){
 }
 
 const ICE=[{urls:"stun:stun.l.google.com:19302"}];
-let peer,stream,aes,mac,th=-35,loud=0,lastAlert=0,tOn=false,wl;
+let peer,stream,aes,mac,th=-35,loud=0,lastAlert=0,tOn=false,wl,paused=false;
+function updateViewers(){
+  const n=[...conns.values()].filter(c=>c.authed).length;
+  $("vcount").textContent=n;
+  $("vbadge").className="badge rounded-pill fs-6 "+(n?"text-bg-success":"text-bg-secondary");
+  if(paused)setStatus("송출 중단됨","wait");
+  else setStatus(n?"수신기 "+n+"대 연결됨":"수신 대기 중","ok");
+}
+function setPaused(p){
+  paused=p;
+  stream.getTracks().forEach(t=>t.enabled=!p);
+  conns.forEach(c=>c.authed&&c.send({t:p?"pause":"resume"}));
+  $("pauseBtn").innerHTML=p?'<i class="bi bi-play-fill me-2"></i>송출 재개':'<i class="bi bi-pause-fill me-2"></i>송출 중단';
+  $("pauseBtn").className="btn w-100 feature-btn "+(p?"btn-success":"btn-outline-danger");
+  $("pvPaused").classList.toggle("d-none",!p);
+  updateViewers();
+}
 const conns=new Map(),calls=new Map();
 
 function setStatus(text,type="wait"){
@@ -227,6 +268,8 @@ $("go").onclick=async()=>{
       audio:{echoCancellation:true,noiseSuppression:false,autoGainControl:false}
     });
 
+    $("pv").srcObject=new MediaStream(stream.getVideoTracks());
+    $("pvCard").classList.remove("d-none");$("ctrlCard").classList.remove("d-none");
     await lock();
     document.addEventListener("visibilitychange",()=>document.visibilityState==="visible"&&lock());
     meter();
@@ -251,13 +294,13 @@ $("go").onclick=async()=>{
           const ok=await crypto.subtle.verify("HMAC",mac,unb(m.s),nonce);
           if(!ok){c.close();return;}
           c.authed=true;startCall(c.peer);
-          setStatus("수신기 연결됨","ok");
+          if(paused)c.send({t:"pause"});updateViewers();
         }else if(c.authed&&m.t==="cfg")th=m.th;
       });
       c.on("close",()=>{
         if(conns.get(c.peer)!==c)return;
         conns.delete(c.peer);calls.get(c.peer)?.close();calls.delete(c.peer);
-        if(conns.size===0)setStatus("수신 대기 중","ok");
+        updateViewers();
       });
     });
   }catch(e){
@@ -312,6 +355,11 @@ $("tq").onclick=async()=>{
   tOn=!tOn;await t.applyConstraints({advanced:[{torch:tOn}]});
   $("tq").classList.toggle("btn-warning",tOn);
 };
+$("pvTg").onclick=()=>{
+  const v=$("pv"),h=v.classList.toggle("d-none");
+  $("pvTg").textContent=h?"보이기":"숨기기";
+};
+$("pauseBtn").onclick=()=>setPaused(!paused);
 $("dm").onclick=()=>$("dim").style.display="flex";
 $("dim").onclick=()=>$("dim").style.display="none";
 $("cp").onclick=async()=>{
