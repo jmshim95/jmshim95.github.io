@@ -181,6 +181,7 @@ async function keys(raw){
   };
 }
 
+const USE_E2EE=true; // 문제 분리용: false면 E2EE 끔 (송신/수신 둘 다 동일하게)
 const W=`onrtctransform=e=>{const{readable,writable,options:o}=e.transformer;const enc=o.op=='enc',s=o.kind=='video'?10:1;
 readable.pipeThrough(new TransformStream({async transform(f,c){try{const d=new Uint8Array(f.data);let out;
 if(enc){const iv=crypto.getRandomValues(new Uint8Array(12));const ct=new Uint8Array(await crypto.subtle.encrypt({name:'AES-GCM',iv},o.key,d.subarray(s)));
@@ -190,7 +191,7 @@ out=new Uint8Array(s+pt.length);out.set(d.subarray(0,s));out.set(pt,s);}
 f.data=out.buffer;c.enqueue(f)}catch(_){}}})).pipeTo(writable)}`;
 const worker=new Worker(URL.createObjectURL(new Blob([W])));
 function e2ee(pc){
-  if(!window.RTCRtpScriptTransform)return false;
+  if(!USE_E2EE||!window.RTCRtpScriptTransform)return false;
   pc.getSenders().forEach(s=>s.track&&(s.transform=new RTCRtpScriptTransform(worker,{op:"enc",kind:s.track.kind,key:aes})));
   pc.addEventListener("track",e=>e.receiver.transform=new RTCRtpScriptTransform(worker,{op:"dec",kind:e.track.kind,key:aes}));
   return true;
@@ -218,7 +219,7 @@ $("go").onclick=async()=>{
     $("errorBox").classList.add("d-none");
 
     let id=localStorage.bcId,k=localStorage.bcK;
-    if(!id){id="bc-"+b64u(rnd(16));k=b64u(rnd(32));localStorage.bcId=id;localStorage.bcK=k;}
+    if(!id||!k||!/^bc[0-9a-f]{32}$/.test(id)){id="bc"+[...rnd(16)].map(b=>b.toString(16).padStart(2,"0")).join("");k=b64u(rnd(32));localStorage.bcId=id;localStorage.bcK=k;}
     ({aes,mac}=await keys(unb(k)));
 
     stream=await navigator.mediaDevices.getUserMedia({
@@ -243,7 +244,7 @@ $("go").onclick=async()=>{
       if(e.type==="unavailable-id")setTimeout(()=>location.reload(),5000);
     });
     peer.on("connection",c=>{
-      const nonce=rnd(16);conns.set(c.peer,c);
+      const nonce=rnd(16);const prev=conns.get(c.peer);conns.set(c.peer,c);prev?.close();
       c.on("open",()=>c.send({t:"ch",n:b64u(nonce)}));
       c.on("data",async m=>{
         if(m.t==="au"){
@@ -254,6 +255,7 @@ $("go").onclick=async()=>{
         }else if(c.authed&&m.t==="cfg")th=m.th;
       });
       c.on("close",()=>{
+        if(conns.get(c.peer)!==c)return;
         conns.delete(c.peer);calls.get(c.peer)?.close();calls.delete(c.peer);
         if(conns.size===0)setStatus("수신 대기 중","ok");
       });
@@ -266,15 +268,10 @@ $("go").onclick=async()=>{
 };
 
 function startCall(pid){
-  calls.get(pid)?.close();
-  const call=peer.call(pid,stream);calls.set(pid,call);
+  const old=calls.get(pid);
+  const call=peer.call(pid,stream);calls.set(pid,call);old?.close();
   const pc=call.peerConnection;
-  if(!e2ee(pc))setStatus("E2EE 미지원","error");
-  try{
-    const cap=RTCRtpSender.getCapabilities("video").codecs;
-    const isH=c=>/H264/i.test(c.mimeType);
-    pc.getTransceivers().forEach(t=>t.sender.track?.kind==="video"&&t.setCodecPreferences([...cap.filter(isH),...cap.filter(c=>!isH(c))]));
-  }catch(_){}
+  if(!e2ee(pc)&&USE_E2EE)setStatus("E2EE 미지원","error");
   setTimeout(()=>{
     pc.getSenders().forEach(s=>{
       if(s.track?.kind!=="video")return;
@@ -283,7 +280,7 @@ function startCall(pid){
     });
   },2000);
   call.on("stream",s=>$("talk").srcObject=s);
-  call.on("close",()=>calls.delete(pid));
+  call.on("close",()=>{if(calls.get(pid)===call)calls.delete(pid);});
 }
 
 function meter(){
