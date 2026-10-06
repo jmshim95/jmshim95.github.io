@@ -1,283 +1,347 @@
 <!doctype html>
 <html lang="ko">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>Baby Cam 수신</title>
-    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
-    <style>
-      body {
-        font: 15px system-ui;
-        margin: 0;
-        padding: 12px;
-        background: #111;
-        color: #eee;
-      }
-      video {
-        width: 100%;
-        background: #000;
-        border-radius: 8px;
-      }
-      button {
-        font: inherit;
-        padding: 12px;
-        margin: 4px 0;
-        border-radius: 10px;
-        border: 0;
-        background: #3b82f6;
-        color: #fff;
-        width: 100%;
-      }
-      #al {
-        display: none;
-        background: #dc2626;
-        padding: 10px;
-        border-radius: 8px;
-        margin: 6px 0;
-        font-weight: 700;
-      }
-      label {
-        display: block;
-        margin-top: 6px;
-      }
-      input[type="range"] {
-        width: 100%;
-      }
-    </style>
-  </head>
-  <body>
-    <div id="al">🔔 울음/큰 소리 감지!</div>
-    <video id="v" autoplay playsinline></video>
-    <div id="st">대기</div>
-    <button id="go">▶ 연결 / 소리 켜기</button>
-    <button id="talk">🎤 누르고 있는 동안 아기에게 말하기</button>
-    <button id="nm">🌙 야간 보정 토글</button>
-    <label
-      >밝기 <input id="br" type="range" min="0.5" max="3" step="0.1" value="1"
-    /></label>
-    <label
-      >대비
-      <input id="ct" type="range" min="0.5" max="2.5" step="0.1" value="1"
-    /></label>
-    <label
-      >소리 임계값 <span id="tv">-35</span> dB
-      <input id="th" type="range" min="-60" max="-10" value="-35"
-    /></label>
-    <script>
-      const $ = (id) => document.getElementById(id);
-      const b64u = (a) =>
-        btoa(String.fromCharCode(...a))
-          .replace(/\+/g, "-")
-          .replace(/\//g, "_")
-          .replace(/=/g, "");
-      const unb = (s) =>
-        Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/")), (c) =>
-          c.charCodeAt(0),
-        );
-      async function keys(raw) {
-        const h = (s) =>
-          crypto.subtle.digest(
-            "SHA-256",
-            new Uint8Array([...raw, ...new TextEncoder().encode(s)]),
-          );
-        return {
-          aes: await crypto.subtle.importKey(
-            "raw",
-            await h("e2ee"),
-            "AES-GCM",
-            false,
-            ["encrypt", "decrypt"],
-          ),
-          mac: await crypto.subtle.importKey(
-            "raw",
-            await h("auth"),
-            { name: "HMAC", hash: "SHA-256" },
-            false,
-            ["sign", "verify"],
-          ),
-        };
-      }
-      const W = `onrtctransform=e=>{const{readable,writable,options:o}=e.transformer;const enc=o.op=='enc',s=o.kind=='video'?10:1;
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#000000">
+  <title>Baby Cam · 수신기</title>
+
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+
+  <style>
+    :root { --viewer-bg:#050505; }
+    body { background:var(--viewer-bg); color:#fff; min-height:100vh; }
+    .viewer-shell { max-width:900px; }
+    .viewer-top {
+      background:linear-gradient(180deg,rgba(0,0,0,.88),rgba(0,0,0,.35),transparent);
+      position:fixed;top:0;left:0;right:0;z-index:20;
+    }
+    .viewer-video-wrap {
+      min-height:65vh;background:#000;display:flex;align-items:center;justify-content:center;
+      position:relative;overflow:hidden;
+    }
+    #v { width:100%;height:100%;max-height:78vh;object-fit:contain;background:#000; }
+    .overlay-status {
+      position:absolute;top:78px;left:16px;right:16px;
+      display:flex;justify-content:space-between;align-items:center;pointer-events:none;
+    }
+    .glass {
+      background:rgba(0,0,0,.55);backdrop-filter:blur(10px);
+      border:1px solid rgba(255,255,255,.12);color:#fff;
+    }
+    #al {
+      display:none;position:absolute;left:16px;right:16px;bottom:16px;z-index:10;
+      background:rgba(220,38,38,.92);border-radius:16px;padding:13px 16px;
+      font-weight:700;box-shadow:0 10px 30px rgba(0,0,0,.35);
+    }
+    .control-panel { background:#111827;border-radius:28px 28px 0 0;position:relative;z-index:5; }
+    .talk-btn {
+      width:96px;height:96px;border-radius:50%;border:0;
+      box-shadow:0 10px 30px rgba(0,0,0,.35);
+      touch-action:none;user-select:none;
+    }
+    .talk-btn.idle { background:#2563eb;color:#fff; }
+    .talk-btn.active { background:#dc2626;color:#fff;transform:scale(1.05); }
+    .round-control {
+      width:54px;height:54px;border-radius:17px;
+      display:grid;place-items:center;
+    }
+    .settings-card { background:#1f2937;border:1px solid rgba(255,255,255,.08); }
+    .form-range::-webkit-slider-thumb { background:#60a5fa; }
+    .form-range::-moz-range-thumb { background:#60a5fa;border:0; }
+    .invalid-link { min-height:100vh;display:grid;place-items:center;padding:24px; }
+  </style>
+</head>
+
+<body>
+  <div id="invalid" class="invalid-link d-none">
+    <div class="text-center">
+      <div class="display-4 mb-3">🔗</div>
+      <h1 class="h4">잘못된 연결 링크입니다.</h1>
+      <p class="text-secondary mb-0">송신기에서 새 연결 링크를 받아 다시 접속해주세요.</p>
+    </div>
+  </div>
+
+  <div id="app" class="viewer-shell mx-auto">
+    <div class="viewer-video-wrap">
+      <video id="v" autoplay playsinline></video>
+
+      <div class="viewer-top px-3 pt-3 pb-5">
+        <div class="d-flex align-items-center gap-2">
+          <div class="flex-grow-1">
+            <div class="fw-bold">👶 Baby Cam</div>
+            <div class="small text-white-50">실시간 모니터</div>
+          </div>
+          <span id="statusBadge" class="badge rounded-pill glass px-3 py-2">
+            <span id="statusDot" class="status-dot me-1"></span>
+            <span id="statusText">대기</span>
+          </span>
+        </div>
+      </div>
+
+      <div class="overlay-status">
+        <span id="qualityBadge" class="badge rounded-pill glass d-none">
+          <i class="bi bi-camera-video me-1"></i>영상 수신 중
+        </span>
+      </div>
+
+      <div id="al">
+        <i class="bi bi-bell-fill me-2"></i><span>큰 소리 감지</span>
+      </div>
+    </div>
+
+    <section class="control-panel px-3 pt-4 pb-4">
+      <div class="text-center">
+        <div class="small text-white-50 mb-3">버튼을 누르고 있는 동안 아기에게 말합니다.</div>
+
+        <button id="talk" class="talk-btn idle" aria-label="말하기">
+          <i class="bi bi-mic-fill fs-2"></i>
+        </button>
+
+        <div id="talkState" class="small fw-semibold mt-3">누르면 말하기</div>
+      </div>
+
+      <div class="d-flex justify-content-center gap-3 mt-4">
+        <button id="go" class="btn btn-primary round-control" title="연결 / 소리 켜기">
+          <i class="bi bi-play-fill fs-5"></i>
+        </button>
+        <button id="mute" class="btn btn-secondary round-control" title="음소거">
+          <i class="bi bi-volume-up-fill fs-5"></i>
+        </button>
+        <button id="fullscreen" class="btn btn-secondary round-control" title="전체 화면">
+          <i class="bi bi-fullscreen fs-5"></i>
+        </button>
+        <button id="settingsBtn" class="btn btn-secondary round-control" data-bs-toggle="offcanvas" data-bs-target="#settings" title="설정">
+          <i class="bi bi-sliders fs-5"></i>
+        </button>
+      </div>
+
+      <div id="connectionMessage" class="small text-center text-white-50 mt-3">
+        연결 버튼을 눌러 카메라에 접속하세요.
+      </div>
+    </section>
+  </div>
+
+  <div class="offcanvas offcanvas-bottom text-bg-dark" tabindex="-1" id="settings" style="height:auto;max-height:85vh;border-radius:24px 24px 0 0;">
+    <div class="offcanvas-header">
+      <h5 class="offcanvas-title"><i class="bi bi-sliders me-2"></i>화면 설정</h5>
+      <button type="button" class="btn-close btn-close-white" data-bs-dismiss="offcanvas"></button>
+    </div>
+    <div class="offcanvas-body pt-0">
+      <div class="settings-card rounded-4 p-3 mb-3">
+        <div class="d-flex justify-content-between mb-2">
+          <label class="fw-semibold" for="br">밝기</label>
+          <span id="brv" class="text-white-50">1.0</span>
+        </div>
+        <input id="br" class="form-range" type="range" min="0.5" max="3" step="0.1" value="1">
+      </div>
+
+      <div class="settings-card rounded-4 p-3 mb-3">
+        <div class="d-flex justify-content-between mb-2">
+          <label class="fw-semibold" for="ct">대비</label>
+          <span id="ctv" class="text-white-50">1.0</span>
+        </div>
+        <input id="ct" class="form-range" type="range" min="0.5" max="2.5" step="0.1" value="1">
+      </div>
+
+      <div class="settings-card rounded-4 p-3 mb-3">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <div>
+            <div class="fw-semibold">야간 보정</div>
+            <div class="small text-white-50">어두운 환경에서 화면을 밝게 보정합니다.</div>
+          </div>
+          <button id="nm" class="btn btn-outline-light rounded-pill px-3">
+            <i class="bi bi-moon-stars me-1"></i> 적용
+          </button>
+        </div>
+      </div>
+
+      <div class="settings-card rounded-4 p-3">
+        <div class="d-flex justify-content-between mb-2">
+          <div>
+            <div class="fw-semibold">소리 알림 임계값</div>
+            <div class="small text-white-50">낮출수록 작은 소리에도 반응합니다.</div>
+          </div>
+          <span id="tv" class="fw-semibold">-35 dB</span>
+        </div>
+        <input id="th" class="form-range" type="range" min="-60" max="-10" value="-35">
+      </div>
+    </div>
+  </div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+const $=(id)=>document.getElementById(id);
+const b64u=(a)=>btoa(String.fromCharCode(...a)).replace(/\+/g,"-").replace(/\//g,"_").replace(/=/g,"");
+const unb=(s)=>Uint8Array.from(atob(s.replace(/-/g,"+").replace(/_/g,"/")),(c)=>c.charCodeAt(0));
+
+async function keys(raw){
+  const h=(s)=>crypto.subtle.digest("SHA-256",new Uint8Array([...raw,...new TextEncoder().encode(s)]));
+  return {
+    aes:await crypto.subtle.importKey("raw",await h("e2ee"),"AES-GCM",false,["encrypt","decrypt"]),
+    mac:await crypto.subtle.importKey("raw",await h("auth"),{name:"HMAC",hash:"SHA-256"},false,["sign","verify"])
+  };
+}
+
+const W=`onrtctransform=e=>{const{readable,writable,options:o}=e.transformer;const enc=o.op=='enc',s=o.kind=='video'?10:1;
 readable.pipeThrough(new TransformStream({async transform(f,c){try{const d=new Uint8Array(f.data);let out;
 if(enc){const iv=crypto.getRandomValues(new Uint8Array(12));const ct=new Uint8Array(await crypto.subtle.encrypt({name:'AES-GCM',iv},o.key,d.subarray(s)));
 out=new Uint8Array(s+ct.length+12);out.set(d.subarray(0,s));out.set(ct,s);out.set(iv,s+ct.length);}
 else{const iv=d.subarray(d.length-12);const pt=new Uint8Array(await crypto.subtle.decrypt({name:'AES-GCM',iv},o.key,d.subarray(s,d.length-12)));
 out=new Uint8Array(s+pt.length);out.set(d.subarray(0,s));out.set(pt,s);}
 f.data=out.buffer;c.enqueue(f)}catch(_){}}})).pipeTo(writable)}`;
-      const worker = new Worker(URL.createObjectURL(new Blob([W])));
-      function e2ee(pc) {
-        if (!window.RTCRtpScriptTransform) return false;
-        pc.getSenders().forEach(
-          (s) =>
-            s.track &&
-            (s.transform = new RTCRtpScriptTransform(worker, {
-              op: "enc",
-              kind: s.track.kind,
-              key: aes,
-            })),
-        );
-        pc.addEventListener(
-          "track",
-          (e) =>
-            (e.receiver.transform = new RTCRtpScriptTransform(worker, {
-              op: "dec",
-              kind: e.track.kind,
-              key: aes,
-            })),
-        );
-        return true;
-      }
+const worker=new Worker(URL.createObjectURL(new Blob([W])));
+function e2ee(pc){
+  if(!window.RTCRtpScriptTransform)return false;
+  pc.getSenders().forEach(s=>s.track&&(s.transform=new RTCRtpScriptTransform(worker,{op:"enc",kind:s.track.kind,key:aes})));
+  pc.addEventListener("track",e=>e.receiver.transform=new RTCRtpScriptTransform(worker,{op:"dec",kind:e.track.kind,key:aes}));
+  return true;
+}
 
-      const ICE = [
-        { urls: "stun:stun.l.google.com:19302" },
-        /*,{urls:'turn:YOUR_HOST:443?transport=tcp',username:'USER',credential:'PASS'}*/
-      ];
-      const [SID, KEY] = location.hash.slice(1).split(".");
-      let peer,
-        conn,
-        call,
-        mic,
-        aes,
-        mac,
-        ac,
-        n = 0,
-        rt = null,
-        okT = null,
-        lastFrames = -1,
-        th = -35;
+const ICE=[{urls:"stun:stun.l.google.com:19302"}];
+const [SID,KEY]=location.hash.slice(1).split(".");
+let peer,conn,call,mic,aes,mac,ac,n=0,rt=null,okT=null,lastFrames=-1,th=-35;
 
-      $("go").onclick = async () => {
-        if (!SID || !KEY)
-          return ($("st").textContent = "링크가 올바르지 않습니다");
-        ({ aes, mac } = await keys(unb(KEY)));
-        ac = new AudioContext();
-        ac.resume();
-        mic = await navigator.mediaDevices.getUserMedia({
-          audio: { echoCancellation: true, noiseSuppression: true },
-        });
-        mic.getAudioTracks()[0].enabled = false; // 말하기 버튼 누를 때만 송출
-        $("v").muted = false;
-        peer = new Peer({ config: { iceServers: ICE } });
-        peer.on("open", dial);
-        peer.on("disconnected", () => peer.reconnect());
-        peer.on("error", () => retry());
-        peer.on("call", (c) => {
-          call?.close();
-          call = c;
-          c.answer(mic);
-          const pc = c.peerConnection;
-          e2ee(pc);
-          pc.oniceconnectionstatechange = () => {
-            const s = pc.iceConnectionState;
-            if (s == "connected" || s == "completed") {
-              n = 0;
-              clearTimeout(okT);
-              rt = null;
-              $("st").textContent = "🟢 연결됨";
-            } else if (s == "disconnected")
-              setTimeout(
-                () => pc.iceConnectionState == "disconnected" && retry(),
-                4000,
-              );
-            else if (s == "failed") retry();
-          };
-          c.on("stream", (s) => {
-            $("v").srcObject = s;
-            $("v")
-              .play()
-              .catch(() => {
-                $("v").muted = true;
-                $("v").play();
-              });
-          });
-          c.on("close", () => retry());
-        });
-        setInterval(watchdog, 5000);
-      };
-      function dial() {
-        clearTimeout(okT);
-        conn?.close();
-        conn = peer.connect(SID, { reliable: true });
-        $("st").textContent = "🟡 연결 시도 " + (n + 1);
-        conn.on("data", async (m) => {
-          if (m.t == "ch") {
-            const s = await crypto.subtle.sign("HMAC", mac, unb(m.n));
-            conn.send({ t: "au", s: b64u(new Uint8Array(s)) });
-            conn.send({ t: "cfg", th });
-          } else if (m.t == "cry") alarm(m.db);
-        });
-        conn.on("close", () => retry());
-        okT = setTimeout(() => retry(), 15000); // 15초 내 영상 없으면 재시도
-      }
-      function retry(now) {
-        // exponential backoff: 1,2,4,8,16,30초 + jitter
-        if (rt && !now) return;
-        clearTimeout(rt);
-        const d = now
-          ? 0
-          : Math.min(30000, 1000 * 2 ** n) + Math.random() * 500;
-        n++;
-        $("st").textContent = "🔴 " + Math.round(d / 1000) + "초 후 재연결";
-        rt = setTimeout(() => {
-          rt = null;
-          call?.close();
-          if (peer?.disconnected) peer.reconnect();
-          dial();
-        }, d);
-      }
-      async function watchdog() {
-        // 프레임 정지 감지
-        const pc = call?.peerConnection;
-        if (!pc) return;
-        for (const r of (await pc.getStats()).values())
-          if (r.type == "inbound-rtp" && r.kind == "video") {
-            if (r.framesDecoded === lastFrames) retry(true);
-            lastFrames = r.framesDecoded;
-          }
-      }
-      addEventListener("online", () => retry(true));
-      document.addEventListener(
-        "visibilitychange",
-        () => document.visibilityState == "visible" && peer && retry(true),
-      );
-      function alarm(db) {
-        $("al").style.display = "block";
-        $("al").textContent = "🔔 소리 감지 (" + db + " dB)";
-        navigator.vibrate?.([300, 150, 300]);
-        const o = ac.createOscillator();
-        o.frequency.value = 880;
-        o.connect(ac.destination);
-        o.start();
-        o.stop(ac.currentTime + 0.4);
-        setTimeout(() => ($("al").style.display = "none"), 8000);
-      }
-      // 양방향 오디오 (push-to-talk)
-      const tk = $("talk"),
-        setTalk = (on) => {
-          if (mic) mic.getAudioTracks()[0].enabled = on;
-          tk.style.background = on ? "#dc2626" : "#3b82f6";
+function setStatus(text,type="wait"){
+  $("statusText").textContent=text;
+  $("statusBadge").className="badge rounded-pill glass px-3 py-2";
+  const dot=$("statusDot");
+  dot.className="status-dot me-1";
+  dot.style.background=type==="ok"?"#22c55e":type==="error"?"#ef4444":"#f59e0b";
+}
+function message(text){$("connectionMessage").textContent=text;}
+
+if(!SID||!KEY){
+  $("app").classList.add("d-none");
+  $("invalid").classList.remove("d-none");
+}else{
+  $("go").onclick=async()=>{
+    try{
+      $("go").disabled=true;
+      $("go").innerHTML='<span class="spinner-border spinner-border-sm"></span>';
+      ({aes,mac}=await keys(unb(KEY)));
+      ac=new AudioContext();await ac.resume();
+      mic=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true}});
+      mic.getAudioTracks()[0].enabled=false;
+      $("v").muted=false;
+      peer=new Peer({config:{iceServers:ICE}});
+      peer.on("open",dial);
+      peer.on("disconnected",()=>peer.reconnect());
+      peer.on("error",()=>retry());
+      peer.on("call",c=>{
+        call?.close();call=c;c.answer(mic);
+        const pc=c.peerConnection;e2ee(pc);
+        pc.oniceconnectionstatechange=()=>{
+          const s=pc.iceConnectionState;
+          if(s==="connected"||s==="completed"){
+            n=0;clearTimeout(okT);rt=null;
+            setStatus("연결됨","ok");message("아기 카메라와 연결되었습니다.");
+            $("qualityBadge").classList.remove("d-none");
+          }else if(s==="disconnected"){
+            setTimeout(()=>pc.iceConnectionState==="disconnected"&&retry(),4000);
+          }else if(s==="failed")retry();
         };
-      tk.onpointerdown = () => setTalk(true);
-      tk.onpointerup =
-        tk.onpointerleave =
-        tk.onpointercancel =
-          () => setTalk(false);
-      // 야간 보정 (CSS filter)
-      const filt = () =>
-        ($("v").style.filter =
-          `brightness(${$("br").value}) contrast(${$("ct").value})`);
-      $("br").oninput = $("ct").oninput = filt;
-      $("nm").onclick = () => {
-        $("br").value = 2.2;
-        $("ct").value = 1.5;
-        filt();
-        $("v").style.filter += " grayscale(1)";
-      };
-      $("th").oninput = (e) => {
-        th = +e.target.value;
-        $("tv").textContent = th;
-        conn?.open && conn.send({ t: "cfg", th });
-      };
-    </script>
-  </body>
+        c.on("stream",s=>{
+          $("v").srcObject=s;
+          $("v").play().catch(()=>{
+            $("v").muted=true;
+            $("v").play();
+            $("mute").innerHTML='<i class="bi bi-volume-mute-fill fs-5"></i>';
+          });
+        });
+        c.on("close",()=>retry());
+      });
+    }catch(e){
+      $("go").disabled=false;
+      $("go").innerHTML='<i class="bi bi-play-fill fs-5"></i>';
+      setStatus("권한 필요","error");
+      message(e.name==="NotAllowedError"?"마이크 권한을 허용해주세요.":"연결 준비에 실패했습니다.");
+    }
+  };
+}
+
+function dial(){
+  clearTimeout(okT);conn?.close();
+  conn=peer.connect(SID,{reliable:true});
+  setStatus("연결 중");message("카메라에 연결하고 있습니다…");
+  conn.on("data",async m=>{
+    if(m.t==="ch"){
+      const s=await crypto.subtle.sign("HMAC",mac,unb(m.n));
+      conn.send({t:"au",s:b64u(new Uint8Array(s))});
+      conn.send({t:"cfg",th});
+    }else if(m.t==="cry")alarm(m.db);
+  });
+  conn.on("close",()=>retry());
+  okT=setTimeout(()=>retry(),15000);
+}
+function retry(now){
+  if(rt&&!now)return;
+  clearTimeout(rt);
+  const d=now?0:Math.min(30000,1000*2**n)+Math.random()*500;
+  n++;setStatus("재연결 중");
+  message(d?"연결이 끊어졌습니다. 다시 연결합니다…":"다시 연결하는 중…");
+  rt=setTimeout(()=>{
+    rt=null;call?.close();
+    if(peer?.disconnected)peer.reconnect();
+    dial();
+  },d);
+}
+async function watchdog(){
+  const pc=call?.peerConnection;if(!pc)return;
+  for(const r of (await pc.getStats()).values())
+    if(r.type==="inbound-rtp"&&r.kind==="video"){
+      if(r.framesDecoded===lastFrames)retry(true);
+      lastFrames=r.framesDecoded;
+    }
+}
+addEventListener("online",()=>retry(true));
+document.addEventListener("visibilitychange",()=>document.visibilityState==="visible"&&peer&&retry(true));
+function alarm(db){
+  $("al").style.display="block";
+  $("al").innerHTML='<i class="bi bi-bell-fill me-2"></i>큰 소리 감지 · '+db+" dB";
+  navigator.vibrate?.([300,150,300]);
+  const o=ac.createOscillator();o.frequency.value=880;o.connect(ac.destination);
+  o.start();o.stop(ac.currentTime+.4);
+  setTimeout(()=>$("al").style.display="none",8000);
+}
+
+const tk=$("talk");
+function setTalk(on){
+  if(mic)mic.getAudioTracks()[0].enabled=on;
+  tk.className="talk-btn "+(on?"active":"idle");
+  tk.innerHTML=on?'<i class="bi bi-mic-fill fs-2"></i>':'<i class="bi bi-mic-fill fs-2"></i>';
+  $("talkState").textContent=on?"말하는 중…":"누르면 말하기";
+}
+tk.onpointerdown=()=>setTalk(true);
+tk.onpointerup=tk.onpointerleave=tk.onpointercancel=()=>setTalk(false);
+
+$("mute").onclick=()=>{
+  $("v").muted=!$("v").muted;
+  $("mute").innerHTML=$("v").muted?'<i class="bi bi-volume-mute-fill fs-5"></i>':'<i class="bi bi-volume-up-fill fs-5"></i>';
+};
+
+$("fullscreen").onclick=async()=>{
+  if(document.fullscreenElement)await document.exitFullscreen();
+  else await $("v").requestFullscreen?.();
+};
+
+const filt=()=>{
+  $("v").style.filter=`brightness(${$("br").value}) contrast(${$("ct").value})`;
+  $("brv").textContent=Number($("br").value).toFixed(1);
+  $("ctv").textContent=Number($("ct").value).toFixed(1);
+};
+$("br").oninput=$("ct").oninput=filt;
+$("nm").onclick=()=>{
+  $("br").value=2.2;$("ct").value=1.5;filt();
+  $("v").style.filter+=" grayscale(1)";
+};
+$("th").oninput=e=>{
+  th=+e.target.value;$("tv").textContent=th+" dB";
+  conn?.open&&conn.send({t:"cfg",th});
+};
+setInterval(watchdog,5000);
+</script>
+</body>
 </html>
