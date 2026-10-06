@@ -87,6 +87,11 @@
         </span>
       </div>
 
+      <div id="pausedOv" class="d-none position-absolute top-50 start-50 translate-middle text-center glass rounded-4 px-4 py-3" style="z-index:9">
+        <i class="bi bi-pause-circle fs-1"></i>
+        <div class="fw-semibold mt-2">송출이 일시 중단되었습니다</div>
+      </div>
+
       <div id="al">
         <i class="bi bi-bell-fill me-2"></i><span>큰 소리 감지</span>
       </div>
@@ -269,6 +274,7 @@ function dial(){
   clearTimeout(okT);
   const old=conn;conn=null;old?.close();
   const c=peer.connect(SID,{reliable:true});conn=c;
+  $("pausedOv").classList.add("d-none");rcvPaused=false;
   setStatus("연결 중");message("카메라에 연결하고 있습니다…");
   c.on("data",async m=>{
     if(m.t==="ch"){
@@ -276,6 +282,8 @@ function dial(){
       c.send({t:"au",s:b64u(new Uint8Array(s))});
       c.send({t:"cfg",th});
     }else if(m.t==="cry")alarm(m.db);
+    else if(m.t==="pause")setRcvPaused(true);
+    else if(m.t==="resume")setRcvPaused(false);
   });
   c.on("close",()=>{if(conn===c)retry();});
   okT=setTimeout(()=>retry(),15000);
@@ -293,10 +301,15 @@ function retry(now){
   },d);
 }
 const alive=()=>["connected","completed"].includes(call?.peerConnection?.iceConnectionState);
-let stall=0;
+let stall=0,rcvPaused=false;
+function setRcvPaused(p){
+  rcvPaused=p;stall=0;
+  $("pausedOv").classList.toggle("d-none",!p);
+  message(p?"송신기가 송출을 일시 중단했습니다.":"아기 카메라와 연결되었습니다.");
+}
 async function watchdog(){
   const pc=call?.peerConnection;
-  if(!pc||document.hidden||rt)return;
+  if(!pc||document.hidden||rt||rcvPaused)return;
   for(const r of (await pc.getStats()).values())
     if(r.type==="inbound-rtp"&&r.kind==="video"){
       stall=(r.framesDecoded===lastFrames)?stall+1:0;
