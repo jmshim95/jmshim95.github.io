@@ -1,284 +1,329 @@
 <!doctype html>
 <html lang="ko">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>Baby Cam 송신</title>
-    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
-    <style>
-      body {
-        font: 15px system-ui;
-        margin: 0;
-        padding: 16px;
-        background: #111;
-        color: #eee;
-      }
-      button {
-        font: inherit;
-        padding: 12px 16px;
-        margin: 4px 0;
-        border-radius: 10px;
-        border: 0;
-        background: #3b82f6;
-        color: #fff;
-        width: 100%;
-      }
-      input {
-        width: 100%;
-        box-sizing: border-box;
-        padding: 8px;
-      }
-      #dim {
-        display: none;
-        position: fixed;
-        inset: 0;
-        background: #000;
-        color: #222;
-        align-items: center;
-        justify-content: center;
-        z-index: 9;
-      }
-    </style>
-  </head>
-  <body>
-    <h3>👶 송신기</h3>
-    <button id="go">▶ 시작 (카메라/마이크 허용)</button>
-    <div id="st">대기 중</div>
-    <p>수신기 링크 (키가 # 뒤에 있어 서버로 전송되지 않음):</p>
-    <input id="link" readonly />
-    <button id="cp">링크 복사</button>
-    <button id="tq">🔦 플래시 토글 (Android Chrome)</button>
-    <button id="dm">🌑 화면 끄기(더미) — 탭하면 복귀</button>
-    <div>소리 감지 임계값 <span id="db">-</span> dB</div>
-    <div id="dim">화면 어둡게 유지 중 · 탭하여 복귀</div>
-    <audio id="talk" autoplay></audio>
-    <script>
-      const $ = (id) => document.getElementById(id);
-      const b64u = (a) =>
-        btoa(String.fromCharCode(...a))
-          .replace(/\+/g, "-")
-          .replace(/\//g, "_")
-          .replace(/=/g, "");
-      const unb = (s) =>
-        Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/")), (c) =>
-          c.charCodeAt(0),
-        );
-      const rnd = (n) => crypto.getRandomValues(new Uint8Array(n));
-      async function keys(raw) {
-        const h = (s) =>
-          crypto.subtle.digest(
-            "SHA-256",
-            new Uint8Array([...raw, ...new TextEncoder().encode(s)]),
-          );
-        return {
-          aes: await crypto.subtle.importKey(
-            "raw",
-            await h("e2ee"),
-            "AES-GCM",
-            false,
-            ["encrypt", "decrypt"],
-          ),
-          mac: await crypto.subtle.importKey(
-            "raw",
-            await h("auth"),
-            { name: "HMAC", hash: "SHA-256" },
-            false,
-            ["sign", "verify"],
-          ),
-        };
-      }
-      // E2EE 워커: 프레임 헤더(비디오10B/오디오1B)만 평문, 나머지 AES-GCM
-      const W = `onrtctransform=e=>{const{readable,writable,options:o}=e.transformer;const enc=o.op=='enc',s=o.kind=='video'?10:1;
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#111827">
+  <title>Baby Cam · 송신기</title>
+
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+
+  <style>
+    :root { --app-bg:#f5f7fb; }
+    body { background:var(--app-bg); min-height:100vh; }
+    .app-shell { max-width:720px; }
+    .topbar { background:#111827; color:#fff; }
+    .brand-mark {
+      width:42px;height:42px;border-radius:14px;display:grid;place-items:center;
+      background:#fff;color:#111827;font-size:21px;
+    }
+    .status-dot { width:9px;height:9px;border-radius:50%;display:inline-block; }
+    .status-wait { background:#f59e0b; }
+    .status-ok { background:#22c55e; }
+    .status-error { background:#ef4444; }
+    .hero-card {
+      border:0;border-radius:24px;overflow:hidden;
+      box-shadow:0 12px 35px rgba(15,23,42,.08);
+    }
+    .action-card { border:0;border-radius:20px; }
+    .icon-btn {
+      width:48px;height:48px;border-radius:15px;display:grid;place-items:center;
+    }
+    .copy-box {
+      background:#f8fafc;border:1px solid #e5e7eb;border-radius:14px;
+      word-break:break-all;font-size:.85rem;
+    }
+    .primary-action {
+      min-height:56px;border-radius:16px;font-weight:700;
+    }
+    .feature-btn {
+      min-height:58px;border-radius:16px;
+    }
+    .meter-track { height:8px;border-radius:99px;background:#e5e7eb;overflow:hidden; }
+    .meter-fill { height:100%;width:0;background:#22c55e;transition:width .15s; }
+    #dim {
+      display:none;position:fixed;inset:0;background:#000;color:#fff;
+      align-items:center;justify-content:center;z-index:2000;
+      text-align:center;cursor:pointer;
+    }
+  </style>
+</head>
+
+<body>
+  <header class="topbar sticky-top">
+    <div class="container app-shell py-3">
+      <div class="d-flex align-items-center gap-3">
+        <div class="brand-mark">👶</div>
+        <div class="flex-grow-1">
+          <div class="fw-bold">Baby Cam</div>
+          <div class="small text-white-50">송신기</div>
+        </div>
+        <span id="statusBadge" class="badge rounded-pill text-bg-secondary px-3 py-2">
+          <span id="statusDot" class="status-dot status-wait me-1"></span>
+          <span id="statusShort">대기 중</span>
+        </span>
+      </div>
+    </div>
+  </header>
+
+  <main class="container app-shell py-4">
+    <section class="hero-card card mb-3">
+      <div class="card-body p-4">
+        <div class="d-flex align-items-start gap-3 mb-4">
+          <div class="flex-grow-1">
+            <div class="text-uppercase text-secondary small fw-semibold">Camera station</div>
+            <h1 class="h4 fw-bold mb-1">아기 카메라 시작하기</h1>
+            <p class="text-secondary mb-0">카메라와 마이크를 켜고 수신기에서 접속하세요.</p>
+          </div>
+          <i class="bi bi-camera-video fs-2 text-primary"></i>
+        </div>
+
+        <button id="go" class="btn btn-primary w-100 primary-action">
+          <i class="bi bi-play-fill me-1"></i> 카메라 시작
+        </button>
+
+        <div id="errorBox" class="alert alert-danger mt-3 mb-0 d-none">
+          <i class="bi bi-exclamation-triangle-fill me-2"></i>
+          <span id="errorText"></span>
+        </div>
+      </div>
+    </section>
+
+    <section class="card action-card shadow-sm mb-3">
+      <div class="card-body p-4">
+        <div class="d-flex align-items-center mb-3">
+          <div class="flex-grow-1">
+            <div class="fw-bold">수신기 연결</div>
+            <div class="small text-secondary">이 링크를 가족/지인에게 공유하세요.</div>
+          </div>
+          <i class="bi bi-link-45deg fs-3 text-secondary"></i>
+        </div>
+
+        <div class="copy-box p-3 mb-3">
+          <span id="link" class="text-secondary">카메라를 시작하면 연결 링크가 생성됩니다.</span>
+        </div>
+
+        <button id="cp" class="btn btn-outline-primary w-100 feature-btn" disabled>
+          <i class="bi bi-copy me-2"></i> 연결 링크 복사
+        </button>
+      </div>
+    </section>
+
+    <section class="card action-card shadow-sm mb-3">
+      <div class="card-body p-4">
+        <div class="d-flex align-items-center mb-3">
+          <div class="flex-grow-1">
+            <div class="fw-bold">소리 감지</div>
+            <div class="small text-secondary">큰 소리가 감지되면 수신기에 알림을 보냅니다.</div>
+          </div>
+          <span id="soundState" class="badge rounded-pill text-bg-light">대기</span>
+        </div>
+
+        <div class="d-flex justify-content-between small mb-2">
+          <span class="text-secondary">임계값</span>
+          <span class="fw-semibold"><span id="db">-35</span> dB</span>
+        </div>
+        <div class="meter-track">
+          <div id="meterFill" class="meter-fill"></div>
+        </div>
+        <div class="small text-secondary mt-2">
+          현재 소리 <span id="currentDb">-</span> dB
+        </div>
+      </div>
+    </section>
+
+    <section class="card action-card shadow-sm">
+      <div class="card-body p-3">
+        <div class="row g-2">
+          <div class="col-6">
+            <button id="tq" class="btn btn-light border w-100 feature-btn">
+              <i class="bi bi-lightning-charge me-1"></i><br>
+              플래시
+            </button>
+          </div>
+          <div class="col-6">
+            <button id="dm" class="btn btn-light border w-100 feature-btn">
+              <i class="bi bi-moon-stars me-1"></i><br>
+              화면 끄기
+            </button>
+          </div>
+        </div>
+        <div class="small text-secondary text-center mt-3">
+          화면 끄기는 실제 화면을 끄는 기능이 아니라 검은 화면을 표시합니다.
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="dim">
+    <div>
+      <i class="bi bi-moon-stars fs-1"></i>
+      <div class="fw-semibold mt-3">화면 어둡게 유지 중</div>
+      <div class="small text-white-50 mt-1">화면을 탭하면 돌아옵니다.</div>
+    </div>
+  </div>
+
+  <audio id="talk" autoplay></audio>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const b64u = (a) => btoa(String.fromCharCode(...a)).replace(/\+/g,"-").replace(/\//g,"_").replace(/=/g,"");
+const unb = (s) => Uint8Array.from(atob(s.replace(/-/g,"+").replace(/_/g,"/")),(c)=>c.charCodeAt(0));
+const rnd = (n) => crypto.getRandomValues(new Uint8Array(n));
+
+async function keys(raw){
+  const h=(s)=>crypto.subtle.digest("SHA-256",new Uint8Array([...raw,...new TextEncoder().encode(s)]));
+  return {
+    aes:await crypto.subtle.importKey("raw",await h("e2ee"),"AES-GCM",false,["encrypt","decrypt"]),
+    mac:await crypto.subtle.importKey("raw",await h("auth"),{name:"HMAC",hash:"SHA-256"},false,["sign","verify"])
+  };
+}
+
+const W=`onrtctransform=e=>{const{readable,writable,options:o}=e.transformer;const enc=o.op=='enc',s=o.kind=='video'?10:1;
 readable.pipeThrough(new TransformStream({async transform(f,c){try{const d=new Uint8Array(f.data);let out;
 if(enc){const iv=crypto.getRandomValues(new Uint8Array(12));const ct=new Uint8Array(await crypto.subtle.encrypt({name:'AES-GCM',iv},o.key,d.subarray(s)));
 out=new Uint8Array(s+ct.length+12);out.set(d.subarray(0,s));out.set(ct,s);out.set(iv,s+ct.length);}
 else{const iv=d.subarray(d.length-12);const pt=new Uint8Array(await crypto.subtle.decrypt({name:'AES-GCM',iv},o.key,d.subarray(s,d.length-12)));
 out=new Uint8Array(s+pt.length);out.set(d.subarray(0,s));out.set(pt,s);}
 f.data=out.buffer;c.enqueue(f)}catch(_){}}})).pipeTo(writable)}`;
-      const worker = new Worker(URL.createObjectURL(new Blob([W])));
-      function e2ee(pc) {
-        if (!window.RTCRtpScriptTransform) return false;
-        pc.getSenders().forEach(
-          (s) =>
-            s.track &&
-            (s.transform = new RTCRtpScriptTransform(worker, {
-              op: "enc",
-              kind: s.track.kind,
-              key: aes,
-            })),
-        );
-        pc.addEventListener(
-          "track",
-          (e) =>
-            (e.receiver.transform = new RTCRtpScriptTransform(worker, {
-              op: "dec",
-              kind: e.track.kind,
-              key: aes,
-            })),
-        );
-        return true;
-      }
+const worker=new Worker(URL.createObjectURL(new Blob([W])));
+function e2ee(pc){
+  if(!window.RTCRtpScriptTransform)return false;
+  pc.getSenders().forEach(s=>s.track&&(s.transform=new RTCRtpScriptTransform(worker,{op:"enc",kind:s.track.kind,key:aes})));
+  pc.addEventListener("track",e=>e.receiver.transform=new RTCRtpScriptTransform(worker,{op:"dec",kind:e.track.kind,key:aes}));
+  return true;
+}
 
-      // TURN: 아래에 Metered.ca / coturn 정보를 추가하세요
-      const ICE = [
-        { urls: "stun:stun.l.google.com:19302" },
-        /*,{urls:'turn:YOUR_HOST:443?transport=tcp',username:'USER',credential:'PASS'}*/
-      ];
-      let peer,
-        stream,
-        aes,
-        mac,
-        th = -35,
-        loud = 0,
-        lastAlert = 0,
-        tOn = false,
-        wl;
-      const conns = new Map(),
-        calls = new Map();
+const ICE=[{urls:"stun:stun.l.google.com:19302"}];
+let peer,stream,aes,mac,th=-35,loud=0,lastAlert=0,tOn=false,wl;
+const conns=new Map(),calls=new Map();
 
-      $("go").onclick = async () => {
-        let id = localStorage.bcId,
-          k = localStorage.bcK;
-        if (!id) {
-          id = "bc-" + b64u(rnd(16));
-          k = b64u(rnd(32));
-          localStorage.bcId = id;
-          localStorage.bcK = k;
-        }
-        ({ aes, mac } = await keys(unb(k)));
-        // 발열/배터리: 720p, 15fps 상한, 후면 카메라
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: "environment",
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-            frameRate: { ideal: 15, max: 20 },
-          },
-          audio: {
-            echoCancellation: true,
-            noiseSuppression: false,
-            autoGainControl: false,
-          },
-        });
-        await lock();
-        document.addEventListener(
-          "visibilitychange",
-          () => document.visibilityState == "visible" && lock(),
-        );
-        meter();
-        peer = new Peer(id, { config: { iceServers: ICE } });
-        peer.on("open", () => {
-          $("st").textContent = "✅ 대기 중 (수신기 연결 가능)";
-          $("link").value =
-            new URL("receiver.html", location.href).href + "#" + id + "." + k;
-        });
-        peer.on("disconnected", () => peer.reconnect());
-        peer.on("error", (e) => {
-          $("st").textContent = "오류: " + e.type;
-          if (e.type == "unavailable-id")
-            setTimeout(() => location.reload(), 5000);
-        });
-        peer.on("connection", (c) => {
-          const nonce = rnd(16);
-          conns.set(c.peer, c);
-          c.on("open", () => c.send({ t: "ch", n: b64u(nonce) }));
-          c.on("data", async (m) => {
-            if (m.t == "au") {
-              // HMAC 챌린지-응답 통과 시에만 영상 송출
-              const ok = await crypto.subtle.verify(
-                "HMAC",
-                mac,
-                unb(m.s),
-                nonce,
-              );
-              if (!ok) {
-                c.close();
-                return;
-              }
-              c.authed = true;
-              startCall(c.peer);
-            } else if (c.authed && m.t == "cfg") th = m.th;
-          });
-          c.on("close", () => {
-            conns.delete(c.peer);
-            calls.get(c.peer)?.close();
-            calls.delete(c.peer);
-          });
-        });
-      };
-      function startCall(pid) {
-        calls.get(pid)?.close();
-        const call = peer.call(pid, stream);
-        calls.set(pid, call);
-        const pc = call.peerConnection;
-        if (!e2ee(pc)) {
-          $("st").textContent = "⚠ 이 브라우저는 E2EE 미지원";
-        }
-        try {
-          const cap = RTCRtpSender.getCapabilities("video").codecs;
-          const isH = (c) => /H264/i.test(c.mimeType);
-          pc.getTransceivers().forEach(
-            (t) =>
-              t.sender.track?.kind == "video" &&
-              t.setCodecPreferences([
-                ...cap.filter(isH),
-                ...cap.filter((c) => !isH(c)),
-              ]),
-          );
-        } catch (_) {}
-        setTimeout(() => {
-          pc.getSenders().forEach((s) => {
-            if (s.track?.kind != "video") return;
-            const p = s.getParameters();
-            if (!p.encodings?.length) p.encodings = [{}];
-            p.encodings[0].maxBitrate = 1e6;
-            s.setParameters(p).catch(() => {});
-          });
-        }, 2000);
-        call.on("stream", (s) => {
-          $("talk").srcObject = s;
-        }); // 양방향: 부모 음성 재생
-        call.on("close", () => calls.delete(pid));
-      }
-      function meter() {
-        // 소리 감지 (RMS → dBFS)
-        const ac = new AudioContext(),
-          an = ac.createAnalyser();
-        an.fftSize = 1024;
-        ac.createMediaStreamSource(
-          new MediaStream(stream.getAudioTracks()),
-        ).connect(an);
-        const buf = new Float32Array(an.fftSize);
-        setInterval(() => {
-          an.getFloatTimeDomainData(buf);
-          let s = 0;
-          for (const v of buf) s += v * v;
-          const db = 20 * Math.log10(Math.sqrt(s / buf.length) || 1e-6);
-          $("db").textContent = th + " (현재 " + db.toFixed(0) + ")";
-          loud = db > th ? loud + 0.2 : Math.max(0, loud - 0.2);
-          if (loud >= 1.5 && Date.now() - lastAlert > 10000) {
-            lastAlert = Date.now();
-            conns.forEach(
-              (c) => c.authed && c.send({ t: "cry", db: Math.round(db) }),
-            );
-          }
-        }, 200);
-      }
-      async function lock() {
-        try {
-          wl = await navigator.wakeLock.request("screen");
-        } catch (_) {}
-      }
-      $("tq").onclick = async () => {
-        const t = stream?.getVideoTracks()[0];
-        if (!t?.getCapabilities?.().torch)
-          return alert("Torch 미지원 (iOS Safari 불가)");
-        tOn = !tOn;
-        await t.applyConstraints({ advanced: [{ torch: tOn }] });
-      };
-      $("dm").onclick = () => ($("dim").style.display = "flex");
-      $("dim").onclick = () => ($("dim").style.display = "none");
-      $("cp").onclick = () => navigator.clipboard.writeText($("link").value);
-    </script>
-  </body>
+function setStatus(text,type="wait"){
+  $("statusShort").textContent=text;
+  $("statusDot").className="status-dot "+(type==="ok"?"status-ok":type==="error"?"status-error":"status-wait");
+  $("statusBadge").className="badge rounded-pill px-3 py-2 "+(type==="ok"?"text-bg-success":type==="error"?"text-bg-danger":"text-bg-warning");
+}
+function showError(text){
+  $("errorText").textContent=text;
+  $("errorBox").classList.remove("d-none");
+  setStatus("오류","error");
+}
+
+$("go").onclick=async()=>{
+  try{
+    $("go").disabled=true;
+    $("go").innerHTML='<span class="spinner-border spinner-border-sm me-2"></span>카메라 준비 중…';
+    $("errorBox").classList.add("d-none");
+
+    let id=localStorage.bcId,k=localStorage.bcK;
+    if(!id){id="bc-"+b64u(rnd(16));k=b64u(rnd(32));localStorage.bcId=id;localStorage.bcK=k;}
+    ({aes,mac}=await keys(unb(k)));
+
+    stream=await navigator.mediaDevices.getUserMedia({
+      video:{facingMode:"environment",width:{ideal:1280},height:{ideal:720},frameRate:{ideal:15,max:20}},
+      audio:{echoCancellation:true,noiseSuppression:false,autoGainControl:false}
+    });
+
+    await lock();
+    document.addEventListener("visibilitychange",()=>document.visibilityState==="visible"&&lock());
+    meter();
+
+    peer=new Peer(id,{config:{iceServers:ICE}});
+    peer.on("open",()=>{
+      setStatus("수신 대기 중","ok");
+      $("link").textContent=new URL("receiver.html",location.href).href+"#"+id+"."+k;
+      $("cp").disabled=false;
+      $("go").innerHTML='<i class="bi bi-check-circle me-2"></i>카메라 실행 중';
+    });
+    peer.on("disconnected",()=>peer.reconnect());
+    peer.on("error",e=>{
+      showError("연결 오류: "+e.type);
+      if(e.type==="unavailable-id")setTimeout(()=>location.reload(),5000);
+    });
+    peer.on("connection",c=>{
+      const nonce=rnd(16);conns.set(c.peer,c);
+      c.on("open",()=>c.send({t:"ch",n:b64u(nonce)}));
+      c.on("data",async m=>{
+        if(m.t==="au"){
+          const ok=await crypto.subtle.verify("HMAC",mac,unb(m.s),nonce);
+          if(!ok){c.close();return;}
+          c.authed=true;startCall(c.peer);
+          setStatus("수신기 연결됨","ok");
+        }else if(c.authed&&m.t==="cfg")th=m.th;
+      });
+      c.on("close",()=>{
+        conns.delete(c.peer);calls.get(c.peer)?.close();calls.delete(c.peer);
+        if(conns.size===0)setStatus("수신 대기 중","ok");
+      });
+    });
+  }catch(e){
+    $("go").disabled=false;
+    $("go").innerHTML='<i class="bi bi-play-fill me-1"></i>카메라 시작';
+    showError(e.name==="NotAllowedError"?"카메라/마이크 권한을 허용해주세요.":(e.message||"카메라를 시작할 수 없습니다."));
+  }
+};
+
+function startCall(pid){
+  calls.get(pid)?.close();
+  const call=peer.call(pid,stream);calls.set(pid,call);
+  const pc=call.peerConnection;
+  if(!e2ee(pc))setStatus("E2EE 미지원","error");
+  try{
+    const cap=RTCRtpSender.getCapabilities("video").codecs;
+    const isH=c=>/H264/i.test(c.mimeType);
+    pc.getTransceivers().forEach(t=>t.sender.track?.kind==="video"&&t.setCodecPreferences([...cap.filter(isH),...cap.filter(c=>!isH(c))]));
+  }catch(_){}
+  setTimeout(()=>{
+    pc.getSenders().forEach(s=>{
+      if(s.track?.kind!=="video")return;
+      const p=s.getParameters();if(!p.encodings?.length)p.encodings=[{}];
+      p.encodings[0].maxBitrate=1e6;s.setParameters(p).catch(()=>{});
+    });
+  },2000);
+  call.on("stream",s=>$("talk").srcObject=s);
+  call.on("close",()=>calls.delete(pid));
+}
+
+function meter(){
+  const ac=new AudioContext(),an=ac.createAnalyser();an.fftSize=1024;
+  ac.createMediaStreamSource(new MediaStream(stream.getAudioTracks())).connect(an);
+  const buf=new Float32Array(an.fftSize);
+  setInterval(()=>{
+    an.getFloatTimeDomainData(buf);let s=0;
+    for(const v of buf)s+=v*v;
+    const db=20*Math.log10(Math.sqrt(s/buf.length)||1e-6);
+    $("currentDb").textContent=db.toFixed(0);
+    $("db").textContent=th;
+    const pct=Math.max(0,Math.min(100,((db+60)/50)*100));
+    $("meterFill").style.width=pct+"%";
+    $("soundState").textContent=db>th?"큰 소리":"정상";
+    $("soundState").className="badge rounded-pill "+(db>th?"text-bg-warning":"text-bg-light");
+    loud=db>th?loud+.2:Math.max(0,loud-.2);
+    if(loud>=1.5&&Date.now()-lastAlert>10000){
+      lastAlert=Date.now();
+      conns.forEach(c=>c.authed&&c.send({t:"cry",db:Math.round(db)}));
+    }
+  },200);
+}
+async function lock(){try{wl=await navigator.wakeLock.request("screen")}catch(_){}}
+
+$("tq").onclick=async()=>{
+  const t=stream?.getVideoTracks()[0];
+  if(!t?.getCapabilities?.().torch)return alert("Torch 미지원 (iOS Safari 불가)");
+  tOn=!tOn;await t.applyConstraints({advanced:[{torch:tOn}]});
+  $("tq").classList.toggle("btn-warning",tOn);
+};
+$("dm").onclick=()=>$("dim").style.display="flex";
+$("dim").onclick=()=>$("dim").style.display="none";
+$("cp").onclick=async()=>{
+  try{
+    await navigator.clipboard.writeText($("link").textContent);
+    $("cp").innerHTML='<i class="bi bi-check2 me-2"></i>복사 완료';
+    setTimeout(()=>$("cp").innerHTML='<i class="bi bi-copy me-2"></i>연결 링크 복사',1800);
+  }catch(_){alert("링크 복사에 실패했습니다.");}
+};
+</script>
+</body>
 </html>
