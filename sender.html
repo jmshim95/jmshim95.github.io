@@ -80,6 +80,10 @@
           <i class="bi bi-camera-video fs-2 text-primary"></i>
         </div>
 
+        <div class="form-check form-switch mb-3">
+          <input class="form-check-input" type="checkbox" id="e2eeSw">
+          <label class="form-check-label small" for="e2eeSw">E2EE 추가 암호화 (실험적 · Safari에서 영상이 안 나오면 끄세요)</label>
+        </div>
         <button id="go" class="btn btn-primary w-100 primary-action">
           <i class="bi bi-play-fill me-1"></i> 카메라 시작
         </button>
@@ -206,7 +210,7 @@ async function keys(raw){
   };
 }
 
-const USE_E2EE=true; // 문제 분리용: false면 E2EE 끔 (송신/수신 둘 다 동일하게)
+let USE_E2EE=localStorage.bcE2ee==="1"; // 기본 꺼짐 (송신기 스위치로 선택, 링크에 포함되어 수신기가 따름)
 const W=`onrtctransform=e=>{const{readable,writable,options:o}=e.transformer;const enc=o.op=='enc';
 readable.pipeThrough(new TransformStream({async transform(f,c){try{const d=new Uint8Array(f.data);let out;const s=o.kind=='video'?(f.type=='key'?10:3):1;
 if(enc){const iv=crypto.getRandomValues(new Uint8Array(12));const ct=new Uint8Array(await crypto.subtle.encrypt({name:'AES-GCM',iv},o.key,d.subarray(s)));
@@ -253,12 +257,14 @@ function showError(text){
   setStatus("오류","error");
 }
 
+$("e2eeSw").checked=USE_E2EE;
 $("go").onclick=async()=>{
   try{
     $("go").disabled=true;
     $("go").innerHTML='<span class="spinner-border spinner-border-sm me-2"></span>카메라 준비 중…';
     $("errorBox").classList.add("d-none");
 
+    USE_E2EE=$("e2eeSw").checked;localStorage.bcE2ee=USE_E2EE?"1":"0";$("e2eeSw").disabled=true;
     let id=localStorage.bcId,k=localStorage.bcK;
     if(!id||!k||!/^bc[0-9a-f]{32}$/.test(id)){id="bc"+[...rnd(16)].map(b=>b.toString(16).padStart(2,"0")).join("");k=b64u(rnd(32));localStorage.bcId=id;localStorage.bcK=k;}
     ({aes,mac}=await keys(unb(k)));
@@ -277,7 +283,7 @@ $("go").onclick=async()=>{
     peer=new Peer(id,{config:{iceServers:ICE}});
     peer.on("open",()=>{
       setStatus("수신 대기 중","ok");
-      $("link").textContent=new URL("receiver.html",location.href).href+"#"+id+"."+k;
+      $("link").textContent=new URL("receiver.html",location.href).href+"#"+id+"."+k+"."+(USE_E2EE?"1":"0");
       $("cp").disabled=false;
       $("go").innerHTML='<i class="bi bi-check-circle me-2"></i>카메라 실행 중';
     });
@@ -304,7 +310,7 @@ $("go").onclick=async()=>{
       });
     });
   }catch(e){
-    $("go").disabled=false;
+    $("go").disabled=false;$("e2eeSw").disabled=false;
     $("go").innerHTML='<i class="bi bi-play-fill me-1"></i>카메라 시작';
     showError(e.name==="NotAllowedError"?"카메라/마이크 권한을 허용해주세요.":(e.message||"카메라를 시작할 수 없습니다."));
   }
@@ -315,7 +321,7 @@ function startCall(pid){
   const call=peer.call(pid,stream);calls.set(pid,call);old?.close();
   const pc=call.peerConnection;
   if(!e2ee(pc)&&USE_E2EE)setStatus("E2EE 미지원","error");
-  try{ // E2EE와 호환되는 VP8로 고정 (H.264/VP9은 프레임 구조 때문에 암호화 시 깨질 수 있음)
+  if(USE_E2EE)try{ // E2EE와 호환되는 VP8로 고정 (H.264/VP9은 프레임 구조 때문에 암호화 시 깨질 수 있음)
     const vp8=RTCRtpSender.getCapabilities("video").codecs.filter(c=>/VP8/i.test(c.mimeType));
     pc.getTransceivers().forEach(t=>t.sender.track?.kind==="video"&&vp8.length&&t.setCodecPreferences(vp8));
   }catch(_){}
