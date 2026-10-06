@@ -207,8 +207,8 @@ async function keys(raw){
 }
 
 const USE_E2EE=true; // 문제 분리용: false면 E2EE 끔 (송신/수신 둘 다 동일하게)
-const W=`onrtctransform=e=>{const{readable,writable,options:o}=e.transformer;const enc=o.op=='enc',s=o.kind=='video'?10:1;
-readable.pipeThrough(new TransformStream({async transform(f,c){try{const d=new Uint8Array(f.data);let out;
+const W=`onrtctransform=e=>{const{readable,writable,options:o}=e.transformer;const enc=o.op=='enc';
+readable.pipeThrough(new TransformStream({async transform(f,c){try{const d=new Uint8Array(f.data);let out;const s=o.kind=='video'?(f.type=='key'?10:3):1;
 if(enc){const iv=crypto.getRandomValues(new Uint8Array(12));const ct=new Uint8Array(await crypto.subtle.encrypt({name:'AES-GCM',iv},o.key,d.subarray(s)));
 out=new Uint8Array(s+ct.length+12);out.set(d.subarray(0,s));out.set(ct,s);out.set(iv,s+ct.length);}
 else{const iv=d.subarray(d.length-12);const pt=new Uint8Array(await crypto.subtle.decrypt({name:'AES-GCM',iv},o.key,d.subarray(s,d.length-12)));
@@ -315,6 +315,10 @@ function startCall(pid){
   const call=peer.call(pid,stream);calls.set(pid,call);old?.close();
   const pc=call.peerConnection;
   if(!e2ee(pc)&&USE_E2EE)setStatus("E2EE 미지원","error");
+  try{ // E2EE와 호환되는 VP8로 고정 (H.264/VP9은 프레임 구조 때문에 암호화 시 깨질 수 있음)
+    const vp8=RTCRtpSender.getCapabilities("video").codecs.filter(c=>/VP8/i.test(c.mimeType));
+    pc.getTransceivers().forEach(t=>t.sender.track?.kind==="video"&&vp8.length&&t.setCodecPreferences(vp8));
+  }catch(_){}
   setTimeout(()=>{
     pc.getSenders().forEach(s=>{
       if(s.track?.kind!=="video")return;
