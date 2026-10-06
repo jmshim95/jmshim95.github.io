@@ -191,8 +191,8 @@ async function keys(raw){
 }
 
 const USE_E2EE=true; // 문제 분리용: false면 E2EE 끔 (송신/수신 둘 다 동일하게)
-const W=`onrtctransform=e=>{const{readable,writable,options:o}=e.transformer;const enc=o.op=='enc',s=o.kind=='video'?10:1;
-readable.pipeThrough(new TransformStream({async transform(f,c){try{const d=new Uint8Array(f.data);let out;
+const W=`onrtctransform=e=>{const{readable,writable,options:o}=e.transformer;const enc=o.op=='enc';
+readable.pipeThrough(new TransformStream({async transform(f,c){try{const d=new Uint8Array(f.data);let out;const s=o.kind=='video'?(f.type=='key'?10:3):1;
 if(enc){const iv=crypto.getRandomValues(new Uint8Array(12));const ct=new Uint8Array(await crypto.subtle.encrypt({name:'AES-GCM',iv},o.key,d.subarray(s)));
 out=new Uint8Array(s+ct.length+12);out.set(d.subarray(0,s));out.set(ct,s);out.set(iv,s+ct.length);}
 else{const iv=d.subarray(d.length-12);const pt=new Uint8Array(await crypto.subtle.decrypt({name:'AES-GCM',iv},o.key,d.subarray(s,d.length-12)));
@@ -312,6 +312,7 @@ async function watchdog(){
   if(!pc||document.hidden||rt||rcvPaused)return;
   for(const r of (await pc.getStats()).values())
     if(r.type==="inbound-rtp"&&r.kind==="video"){
+      $("qualityBadge").lastChild.textContent=" 영상 수신 중 · "+(r.framesDecoded||0)+"프레임";
       stall=(r.framesDecoded===lastFrames)?stall+1:0;
       lastFrames=r.framesDecoded;
       if(stall>=3){stall=0;retry(true);}
